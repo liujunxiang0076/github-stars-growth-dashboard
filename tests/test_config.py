@@ -1,5 +1,6 @@
 from github_stars_dashboard.config import load_config
 from github_stars_dashboard.collect import _prepare_query
+from github_stars_dashboard.growth import calculate_growth
 
 
 def test_load_config_defaults(tmp_path):
@@ -33,3 +34,26 @@ def test_prepare_query_replaces_recent_date():
     )
 
     assert query == "stars:10..100 created:>=2026-06-01"
+
+
+def test_calculate_growth_ranks_by_delta():
+    rows = calculate_growth(
+        [
+            {"full_name": "example/a", "html_url": "https://github.com/example/a", "stargazers_count": 10},
+            {"full_name": "example/b", "html_url": "https://github.com/example/b", "stargazers_count": 100},
+        ],
+        [
+            {"full_name": "example/a", "html_url": "https://github.com/example/a", "stargazers_count": 30},
+            {"full_name": "example/b", "html_url": "https://github.com/example/b", "stargazers_count": 105},
+        ],
+        candidates=[
+            {"full_name": "example/a", "language": "Python", "topics": ["cli"], "description": "A repo"},
+            {"full_name": "example/b", "language": "Go", "topics": [], "description": "B repo"},
+        ],
+        top_n=2,
+    )
+
+    assert [row.full_name for row in rows] == ["example/a", "example/b"]
+    assert rows[0].rank == 1
+    assert rows[0].stars_delta == 20
+    assert rows[0].growth_rate == 2

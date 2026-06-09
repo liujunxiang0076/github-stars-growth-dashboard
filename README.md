@@ -36,3 +36,10 @@ Run the full pipeline dry-run:
 $env:PYTHONPATH = "src"
 python -m github_stars_dashboard.cli run --dry-run
 ```
+
+Generate a daily report from two saved snapshots:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m github_stars_dashboard.cli report --start-date 2026-06-08 --end-date 2026-06-09
+```

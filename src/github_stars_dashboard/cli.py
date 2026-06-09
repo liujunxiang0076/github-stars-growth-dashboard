@@ -5,6 +5,7 @@ import argparse
 from github_stars_dashboard.collect import collect_candidates
 from github_stars_dashboard.config import load_config
 from github_stars_dashboard.pipeline import run_pipeline
+from github_stars_dashboard.reports import generate_daily_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,6 +34,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the YAML config file.",
     )
 
+    report_parser = subparsers.add_parser("report", help="Generate reports from saved snapshots.")
+    report_parser.add_argument(
+        "--config",
+        default="config/sources.yml",
+        help="Path to the YAML config file.",
+    )
+    report_parser.add_argument(
+        "--start-date",
+        help="Start snapshot date in YYYY-MM-DD format. Defaults to yesterday.",
+    )
+    report_parser.add_argument(
+        "--end-date",
+        help="End snapshot date in YYYY-MM-DD format. Defaults to today.",
+    )
+
     return parser
 
 
@@ -43,6 +59,14 @@ def main() -> None:
         run_pipeline(config_path=args.config, dry_run=args.dry_run)
     elif args.command == "collect":
         collect_candidates(load_config(args.config))
+    elif args.command == "report":
+        from datetime import date
+
+        generate_daily_report(
+            load_config(args.config),
+            start_date=date.fromisoformat(args.start_date) if args.start_date else None,
+            end_date=date.fromisoformat(args.end_date) if args.end_date else None,
+        )
 
 
 if __name__ == "__main__":
