@@ -5,7 +5,8 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -41,11 +42,27 @@ class GitHubClient:
         )
         return self.get_json(f"{API_BASE_URL}/search/repositories?{params}")
 
+    def get_repository_readme(self, full_name: str) -> dict[str, Any]:
+        owner, repo = full_name.split("/", 1)
+        return self.get_json(f"{API_BASE_URL}/repos/{quote(owner)}/{quote(repo)}/readme")
+
+    def list_releases(self, full_name: str, *, per_page: int = 5) -> list[dict[str, Any]]:
+        owner, repo = full_name.split("/", 1)
+        params = urlencode({"per_page": per_page})
+        result = self.get_json(f"{API_BASE_URL}/repos/{quote(owner)}/{quote(repo)}/releases?{params}")
+        return result if isinstance(result, list) else []
+
+    def list_recent_issues(self, full_name: str, *, per_page: int = 8) -> list[dict[str, Any]]:
+        owner, repo = full_name.split("/", 1)
+        params = urlencode({"state": "all", "sort": "updated", "direction": "desc", "per_page": per_page})
+        result = self.get_json(f"{API_BASE_URL}/repos/{quote(owner)}/{quote(repo)}/issues?{params}")
+        return result if isinstance(result, list) else []
+
     def get_json(self, url: str) -> dict[str, Any]:
         request = Request(url, headers=self._headers())
 
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=12) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
@@ -58,6 +75,8 @@ class GitHubClient:
                     detail = ""
                 raise RuntimeError(f"GitHub API rate limited or forbidden.{detail} {body}") from error
             raise RuntimeError(f"GitHub API request failed with HTTP {error.code}: {body}") from error
+        except (TimeoutError, URLError) as error:
+            raise RuntimeError(f"GitHub API request failed: {error}") from error
 
     def _headers(self) -> dict[str, str]:
         headers = {

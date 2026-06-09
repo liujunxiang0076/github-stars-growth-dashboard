@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from github_stars_dashboard.analyze import analyze_top_repositories
 from github_stars_dashboard.collect import collect_candidates
 from github_stars_dashboard.config import load_config
 from github_stars_dashboard.render import render_reports
@@ -19,6 +18,5 @@ def run_pipeline(config_path: str, dry_run: bool = False) -> None:
         return
 
     candidates = collect_candidates(config)
-    analysis = analyze_top_repositories(config, candidates)
-    outputs = render_reports(config, analysis)
+    outputs = render_reports(config, {"candidates": candidates})
     archive_outputs(config, outputs)

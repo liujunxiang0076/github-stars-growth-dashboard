@@ -43,3 +43,5 @@ Generate a daily report from two saved snapshots:
 $env:PYTHONPATH = "src"
 python -m github_stars_dashboard.cli report --start-date 2026-06-08 --end-date 2026-06-09
 ```
+
+The report now enriches Top 10 repositories with GitHub README, recent release, and issue/PR signals. External web discovery is exposed as search links in the HTML report; automated third-party page reading will be added as a later integration point.

@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from github_stars_dashboard.analyze import enrich_growth_rows
 from github_stars_dashboard.config import AppConfig
 from github_stars_dashboard.growth import GrowthRow, calculate_growth
 
@@ -42,6 +43,7 @@ def generate_daily_report(
         candidates=candidates,
         top_n=config.top_n,
     )
+    row_analysis = enrich_growth_rows(config, rows)
 
     report = {
         "type": "daily",
@@ -52,7 +54,13 @@ def generate_daily_report(
         "generated_at": datetime.now(ZoneInfo(config.timezone)).isoformat(timespec="seconds"),
         "timezone": config.timezone,
         "top_n": config.top_n,
-        "rows": [asdict(row) for row in rows],
+        "rows": [
+            {
+                **asdict(row),
+                "analysis": row_analysis.get(row.full_name, {}),
+            }
+            for row in rows
+        ],
     }
 
     analysis_path = Path("data/analysis") / f"{resolved_start_date.isoformat()}.json"
@@ -61,7 +69,7 @@ def generate_daily_report(
 
     html_path = Path("reports/daily") / f"{resolved_start_date.isoformat()}.html"
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(_render_daily_html(report, rows), encoding="utf-8")
+    html_path.write_text(_render_daily_html(report, rows, row_analysis), encoding="utf-8")
 
     index_path = Path("reports/index.html")
     index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,15 +89,20 @@ def _read_json_list(path: Path) -> list[dict]:
     return data
 
 
-def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
+def _render_daily_html(report: dict, rows: list[GrowthRow], row_analysis: dict[str, dict]) -> str:
     title = f"GitHub Stars 增长日报 {report['period_start']}"
-    rows_html = "\n".join(_render_row(row) for row in rows)
+    total_delta = sum(row.stars_delta for row in rows)
+    top_growth = rows[0].stars_delta if rows else 0
+    rows_html = "\n".join(_render_row(row, row_analysis.get(row.full_name, {})) for row in rows)
+    cards_html = "\n".join(_render_analysis_card(row, row_analysis.get(row.full_name, {})) for row in rows)
     if not rows_html:
         rows_html = """
         <tr>
-          <td colspan="9" class="empty">没有可计算的增长数据。请确认起止快照中存在相同仓库。</td>
+          <td colspan="10" class="empty">没有可计算的增长数据。请确认起止快照中存在相同仓库。</td>
         </tr>
         """
+    if not cards_html:
+        cards_html = '<p class="empty">暂无可展示的仓库分析。</p>'
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -100,38 +113,49 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
   <style>
     :root {{
       color-scheme: light;
-      --bg: #f7f8fa;
-      --panel: #ffffff;
-      --text: #20242a;
-      --muted: #667085;
-      --line: #d7dce3;
-      --accent: #0f766e;
-      --accent-soft: #e6f4f1;
-      --warn: #9a3412;
+      --paper: #f4efe6;
+      --paper-strong: #ebe2d2;
+      --ink: #20201d;
+      --muted: #6f6a5f;
+      --line: #d4c7b2;
+      --panel: #fffaf0;
+      --panel-2: #fbf3e4;
+      --green: #137a5a;
+      --green-soft: #dff0e8;
+      --red: #b23a2f;
+      --blue: #275b8c;
+      --gold: #b7791f;
+      --shadow: 0 18px 40px rgba(58, 43, 23, 0.12);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        linear-gradient(rgba(32, 32, 29, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(32, 32, 29, 0.035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 26px 26px;
+      color: var(--ink);
+      font-family: Georgia, "Times New Roman", "Microsoft YaHei", serif;
       line-height: 1.5;
     }}
     main {{
-      max-width: 1180px;
+      max-width: 1240px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
+      padding: 34px 20px 56px;
     }}
     header {{
-      display: flex;
-      justify-content: space-between;
-      gap: 24px;
-      align-items: flex-end;
-      margin-bottom: 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 22px;
+      border-bottom: 3px double var(--ink);
+      padding-bottom: 18px;
     }}
     h1 {{
       margin: 0 0 8px;
-      font-size: 30px;
+      font-size: 40px;
       line-height: 1.2;
       letter-spacing: 0;
     }}
@@ -143,19 +167,57 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
     .badge {{
       display: inline-flex;
       align-items: center;
-      height: 32px;
-      padding: 0 10px;
-      border: 1px solid var(--line);
-      background: var(--panel);
-      color: var(--muted);
-      font-size: 13px;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: #fffaf0;
+      font-size: 12px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
       white-space: nowrap;
+    }}
+    .stats {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0;
+    }}
+    .stat {{
+      border: 1px solid var(--line);
+      background: rgba(255, 250, 240, 0.86);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      min-height: 104px;
+    }}
+    .stat span {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+    .stat strong {{
+      display: block;
+      margin-top: 8px;
+      font-size: 28px;
+      line-height: 1.15;
+      font-variant-numeric: tabular-nums;
+    }}
+    h2 {{
+      margin: 30px 0 12px;
+      font-size: 22px;
+      letter-spacing: 0;
     }}
     section {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       overflow: hidden;
+      box-shadow: var(--shadow);
     }}
     table {{
       width: 100%;
@@ -163,35 +225,48 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
       table-layout: fixed;
     }}
     th, td {{
-      padding: 12px 14px;
+      padding: 13px 14px;
       border-bottom: 1px solid var(--line);
       vertical-align: top;
       text-align: left;
       font-size: 14px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
     }}
     th {{
-      background: #eef1f5;
-      color: #344054;
-      font-weight: 650;
+      background: var(--paper-strong);
+      color: #3e3427;
+      font-size: 12px;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }}
     tr:last-child td {{ border-bottom: 0; }}
     a {{
-      color: #075985;
+      color: var(--blue);
       text-decoration: none;
       font-weight: 650;
     }}
     a:hover {{ text-decoration: underline; }}
-    .rank {{ width: 56px; color: var(--muted); }}
+    .rank {{ width: 56px; color: var(--muted); font-family: Georgia, serif; }}
     .repo {{ width: 220px; overflow-wrap: anywhere; }}
     .num {{ width: 104px; font-variant-numeric: tabular-nums; }}
     .delta {{
       display: inline-flex;
       padding: 2px 8px;
-      background: var(--accent-soft);
-      color: var(--accent);
+      background: var(--green-soft);
+      color: var(--green);
       border-radius: 999px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
+    }}
+    .confidence {{
+      display: inline-flex;
+      padding: 2px 8px;
+      background: #f7e7bb;
+      color: #7a4d09;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
     }}
     .desc {{
       color: var(--muted);
@@ -206,9 +281,9 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
       display: inline-flex;
       max-width: 100%;
       padding: 2px 6px;
-      background: #f2f4f7;
-      color: #475467;
-      border: 1px solid #e4e7ec;
+      background: #f2eadc;
+      color: #5f5548;
+      border: 1px solid #e1d2ba;
       border-radius: 999px;
       font-size: 12px;
       overflow-wrap: anywhere;
@@ -218,16 +293,97 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
       color: var(--muted);
       font-size: 13px;
     }}
+    .analysis-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 12px;
+    }}
+    .analysis-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }}
+    .analysis-card::before {{
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--green);
+      border-radius: 8px 0 0 8px;
+    }}
+    .card-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }}
+    .card-head h3 {{
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }}
+    .card-head small {{
+      color: var(--muted);
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      white-space: nowrap;
+    }}
+    .analysis-card p {{
+      margin: 10px 0;
+      color: #423a31;
+      font-size: 14px;
+    }}
+    .analysis-card h4 {{
+      margin: 16px 0 8px;
+      font-size: 13px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--red);
+    }}
+    .analysis-card ul {{
+      margin: 0;
+      padding-left: 18px;
+      color: #4d463e;
+      font-size: 14px;
+    }}
+    .source-links {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }}
+    .source-links a {{
+      display: inline-flex;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--blue);
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    }}
     .empty {{
-      color: var(--warn);
+      color: var(--red);
       text-align: center;
       padding: 28px;
     }}
     @media (max-width: 820px) {{
       header {{ display: block; }}
       .badge {{ margin-top: 12px; }}
+      .stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .analysis-grid {{ grid-template-columns: 1fr; }}
       section {{ overflow-x: auto; }}
-      table {{ min-width: 940px; }}
+      table {{ min-width: 1080px; }}
+    }}
+    @media (max-width: 520px) {{
+      h1 {{ font-size: 30px; }}
+      .stats {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -242,6 +398,14 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
       <div class="badge">Top {report['top_n']} by Stars Delta</div>
     </header>
 
+    <div class="stats" aria-label="日报指标概览">
+      <div class="stat"><span>Tracked Top</span><strong>{len(rows)}</strong></div>
+      <div class="stat"><span>Total Delta</span><strong>+{total_delta:,}</strong></div>
+      <div class="stat"><span>Leader Delta</span><strong>+{top_growth:,}</strong></div>
+      <div class="stat"><span>Evidence Mode</span><strong>GitHub</strong></div>
+    </div>
+
+    <h2>增长榜</h2>
     <section aria-label="GitHub Stars 增长榜">
       <table>
         <thead>
@@ -255,6 +419,7 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
             <th>语言</th>
             <th>Topics</th>
             <th>用途摘要</th>
+            <th>分析置信度</th>
           </tr>
         </thead>
         <tbody>
@@ -263,21 +428,27 @@ def _render_daily_html(report: dict, rows: list[GrowthRow]) -> str:
       </table>
     </section>
 
-    <p class="note">数据基于本地 GitHub API 快照差值计算。首次运行需要至少两天快照才能形成真实增长榜；增长原因深度分析将在下一阶段接入 README、release、issues 和联网搜索。</p>
+    <h2>逐仓库分析</h2>
+    <div class="analysis-grid">
+      {cards_html}
+    </div>
+
+    <p class="note">数据基于本地 GitHub API 快照差值计算。分析证据来自 README、近期 release、近期 issue/PR；外部搜索以可点击检索入口呈现，后续自动化可继续抓取第三方网页正文。</p>
   </main>
 </body>
 </html>
 """
 
 
-def _render_row(row: GrowthRow) -> str:
+def _render_row(row: GrowthRow, analysis: dict) -> str:
     topics = row.topics[:5]
     topics_html = "".join(f'<span class="topic">{html.escape(topic)}</span>' for topic in topics)
     if not topics_html:
         topics_html = '<span class="desc">-</span>'
 
     growth_rate = f"{row.growth_rate * 100:.2f}%"
-    description = row.description or "暂无描述"
+    purpose = analysis.get("purpose_summary") or row.description or "暂无描述"
+    confidence = analysis.get("confidence") or "低"
     return f"""
           <tr>
             <td class="rank">#{row.rank}</td>
@@ -288,9 +459,86 @@ def _render_row(row: GrowthRow) -> str:
             <td class="num">{html.escape(growth_rate)}</td>
             <td>{html.escape(row.language or "-")}</td>
             <td><div class="topics">{topics_html}</div></td>
-            <td class="desc">{html.escape(description)}</td>
+            <td class="desc">{html.escape(_clip(purpose, 160))}</td>
+            <td><span class="confidence">{html.escape(confidence)}</span></td>
           </tr>
 """
+
+
+def _render_analysis_card(row: GrowthRow, analysis: dict) -> str:
+    purpose = analysis.get("purpose_summary") or row.description or "暂无用途摘要。"
+    signals = analysis.get("observed_signals") or []
+    reasons = analysis.get("likely_reasons") or []
+    evidence = analysis.get("evidence") or {}
+    release_links = evidence.get("recent_releases") or []
+    issue_links = evidence.get("recent_issues") or []
+    search_links = evidence.get("external_search") or []
+
+    signals_html = _render_list(signals)
+    reasons_html = _render_list(reasons)
+    release_html = _render_links(
+        [
+            {
+                "label": item.get("name") or item.get("tag_name") or "release",
+                "url": item.get("html_url"),
+            }
+            for item in release_links
+            if item.get("html_url")
+        ]
+    )
+    issue_html = _render_links(
+        [
+            {"label": _clip(item.get("title") or item.get("type") or "issue", 36), "url": item.get("html_url")}
+            for item in issue_links
+            if item.get("html_url")
+        ]
+    )
+    search_html = _render_links(search_links)
+
+    return f"""
+      <article class="analysis-card">
+        <div class="card-head">
+          <h3><a href="{html.escape(row.html_url)}" target="_blank" rel="noreferrer">#{row.rank} {html.escape(row.full_name)}</a></h3>
+          <small>+{row.stars_delta:,} Stars</small>
+        </div>
+        <p>{html.escape(purpose)}</p>
+        <h4>增长信号</h4>
+        {signals_html}
+        <h4>可能原因</h4>
+        {reasons_html}
+        <h4>证据入口</h4>
+        <div class="source-links">
+          {release_html}
+          {issue_html}
+          {search_html}
+        </div>
+      </article>
+"""
+
+
+def _render_list(items: list[str]) -> str:
+    if not items:
+        return "<p class=\"desc\">暂无足够信号。</p>"
+    return "<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in items[:5]) + "</ul>"
+
+
+def _render_links(items: list[dict]) -> str:
+    links = []
+    for item in items[:6]:
+        label = item.get("label")
+        url = item.get("url")
+        if not label or not url:
+            continue
+        links.append(
+            f'<a href="{html.escape(url)}" target="_blank" rel="noreferrer">{html.escape(_clip(label, 34))}</a>'
+        )
+    return "".join(links)
+
+
+def _clip(value: str, length: int) -> str:
+    if len(value) <= length:
+        return value
+    return value[: length - 1].rstrip() + "…"
 
 
 def _render_index_html(report: dict, daily_path: Path) -> str:
@@ -305,25 +553,25 @@ def _render_index_html(report: dict, daily_path: Path) -> str:
   <style>
     body {{
       margin: 0;
-      background: #f7f8fa;
-      color: #20242a;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4efe6;
+      color: #20201d;
+      font-family: Georgia, "Times New Roman", "Microsoft YaHei", serif;
     }}
     main {{
       max-width: 760px;
       margin: 0 auto;
       padding: 40px 20px;
     }}
-    h1 {{ margin: 0 0 12px; font-size: 30px; letter-spacing: 0; }}
+    h1 {{ margin: 0 0 12px; font-size: 34px; letter-spacing: 0; }}
     a {{
       display: inline-flex;
       margin-top: 16px;
-      color: #075985;
+      color: #275b8c;
       font-weight: 700;
       text-decoration: none;
     }}
     a:hover {{ text-decoration: underline; }}
-    p {{ color: #667085; line-height: 1.6; }}
+    p {{ color: #6f6a5f; line-height: 1.6; }}
   </style>
 </head>
 <body>
