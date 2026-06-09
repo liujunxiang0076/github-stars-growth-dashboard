@@ -36,13 +36,15 @@ def analyze_repository(config: AppConfig, client: GitHubClient, row: GrowthRow) 
     issue_signals = _issue_signals(issues)
     topics = row.topics[:8]
     readme_summary = _summarize_readme(readme)
-    purpose = _build_purpose_summary(row, readme_summary)
-    likely_reasons = _build_likely_reasons(row, recent_releases, issue_signals, topics)
+    category = _classify_repository(row, readme_summary)
+    purpose = _build_purpose_summary(row, readme_summary, category)
+    likely_reasons = _build_likely_reasons(row, recent_releases, issue_signals, topics, category)
     observed_signals = _build_observed_signals(row, recent_releases, issue_signals, readme)
     confidence = _confidence(readme, recent_releases, issue_signals)
 
     return {
         "purpose_summary": purpose,
+        "category": category,
         "observed_signals": observed_signals,
         "likely_reasons": likely_reasons,
         "evidence": {
@@ -148,12 +150,46 @@ def _summarize_readme(readme: str) -> str:
     return summary[:420]
 
 
-def _build_purpose_summary(row: GrowthRow, readme_summary: str) -> str:
+def _classify_repository(row: GrowthRow, readme_summary: str) -> str:
+    text = " ".join(
+        [
+            row.full_name,
+            row.description or "",
+            " ".join(row.topics),
+            readme_summary,
+        ]
+    ).lower()
+
+    tokens = set(re.findall(r"[a-z0-9]+", text))
+
+    if any(keyword in text for keyword in ["awesome", "curated list", "resources", "free learning"]):
+        return "curated_resource_list"
+    if any(keyword in text for keyword in ["roadmap", "guide", "learning path"]):
+        return "learning_roadmap"
+    if any(keyword in text for keyword in ["api", "apis", "endpoint"]):
+        return "api_directory"
+    if tokens.intersection({"ai", "llm", "agent", "agents", "assistant", "mcp"}):
+        return "ai_tooling"
+    if any(keyword in text for keyword in ["framework", "library", "sdk"]):
+        return "developer_library"
+    return "general_project"
+
+
+def _build_purpose_summary(row: GrowthRow, readme_summary: str, category: str) -> str:
+    prefix_by_category = {
+        "curated_resource_list": "这是一个资源索引型仓库，核心价值是把分散的工具、教程或项目筛选后集中整理，降低用户搜索和比较成本。",
+        "learning_roadmap": "这是一个学习路线/知识导航型仓库，核心价值是把复杂技术栈拆成可跟随的路径、清单或指南。",
+        "api_directory": "这是一个 API 目录型仓库，核心价值是帮助开发者快速发现可用接口、示例和接入入口。",
+        "ai_tooling": "这是一个 AI 工具型仓库，核心价值通常集中在模型使用、智能体、自动化或开发效率提升。",
+        "developer_library": "这是一个开发库/框架型仓库，核心价值是提供可复用能力，帮助开发者更快构建应用。",
+        "general_project": "这是一个通用开源项目，具体价值需要结合 README、topic 和近期活动判断。",
+    }
+    prefix = prefix_by_category.get(category, prefix_by_category["general_project"])
     if readme_summary:
-        return f"README 显示，该仓库主要围绕：{readme_summary}"
+        return f"{prefix} README 摘要：{readme_summary}"
     if row.description:
-        return f"GitHub 描述显示，该仓库主要用途是：{row.description}"
-    return "该仓库缺少可用 README 摘要和描述，需要人工进一步确认用途。"
+        return f"{prefix} GitHub 描述：{row.description}"
+    return f"{prefix} 当前缺少可用 README 摘要和描述，需要人工进一步确认用途。"
 
 
 def _build_observed_signals(
@@ -162,10 +198,11 @@ def _build_observed_signals(
     issue_signals: dict,
     readme: str,
 ) -> list[str]:
-    signals = [
-        f"昨日新增 Stars {row.stars_delta:,}，增长率 {row.growth_rate * 100:.2f}%。",
-        f"当前 Stars 总量 {row.stars_end:,}。",
-    ]
+    signals = [f"当前 Stars 总量 {row.stars_end:,}。"]
+    if row.measurement_status == "ok":
+        signals.insert(0, f"昨日新增 Stars {row.stars_delta:,}，增长率 {row.growth_rate * 100:.2f}%。")
+    else:
+        signals.insert(0, "昨日新增 Stars 未能可靠统计，通常是 GitHub API 限流或 token 未配置导致。")
     if recent_releases:
         signals.append(f"近 30 天有 {len(recent_releases)} 个 release，说明近期存在发布动作。")
     if issue_signals["recent_items"]:
@@ -183,6 +220,7 @@ def _build_likely_reasons(
     recent_releases: list[dict],
     issue_signals: dict,
     topics: list[str],
+    category: str,
 ) -> list[str]:
     reasons = []
     hot_topics = {"ai", "llm", "agent", "agents", "mcp", "rag", "workflow", "cursor"}
@@ -202,6 +240,16 @@ def _build_likely_reasons(
         reasons.append("增长率较高，可能来自低基数项目的集中传播或新近曝光。")
     if row.stars_delta >= 100:
         reasons.append("新增 Stars 绝对值较高，可能被榜单、文章、社区讨论或产品发布放大。")
+    if category == "curated_resource_list":
+        reasons.append("资源清单型仓库天然适合被收藏，用户未必每天使用，但会为了后续检索和分享而 star。")
+    elif category == "learning_roadmap":
+        reasons.append("路线图/学习指南通常覆盖新手入门和技能规划需求，容易在搜索、课程、文章引用中持续获得曝光。")
+    elif category == "api_directory":
+        reasons.append("API 目录解决的是开发前期发现和选型问题，适合被工具开发者、教程作者和集成场景反复引用。")
+    elif category == "ai_tooling":
+        reasons.append("AI/智能体相关项目处在高关注周期，若 README 展示效果清晰，容易被开发者快速收藏试用。")
+    elif category == "developer_library":
+        reasons.append("库/框架类项目的增长往往来自真实集成需求、生态推荐、版本发布或迁移讨论。")
     if not reasons:
         reasons.append("当前 GitHub 侧信号有限，增长原因需要结合外部文章和社区讨论继续核验。")
 

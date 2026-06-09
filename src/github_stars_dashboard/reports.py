@@ -3,13 +3,15 @@ from __future__ import annotations
 import html
 import json
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from github_stars_dashboard.analyze import enrich_growth_rows
 from github_stars_dashboard.config import AppConfig
-from github_stars_dashboard.growth import GrowthRow, calculate_growth
+from github_stars_dashboard.env import load_env_file
+from github_stars_dashboard.github_api import GitHubClient
+from github_stars_dashboard.growth import GrowthRow, calculate_growth, calculate_growth_from_stargazers
 
 
 def generate_daily_report(
@@ -37,11 +39,12 @@ def generate_daily_report(
     start_snapshot = _read_json_list(start_snapshot_path)
     end_snapshot = _read_json_list(end_snapshot_path)
     candidates = _read_json_list(candidates_path) if candidates_path.exists() else []
-    rows = calculate_growth(
-        start_snapshot,
-        end_snapshot,
+    rows, data_method, coverage_note = _calculate_daily_rows(
+        config,
+        start_snapshot=start_snapshot,
+        end_snapshot=end_snapshot,
         candidates=candidates,
-        top_n=config.top_n,
+        period_date=resolved_start_date,
     )
     row_analysis = enrich_growth_rows(config, rows)
 
@@ -54,6 +57,8 @@ def generate_daily_report(
         "generated_at": datetime.now(ZoneInfo(config.timezone)).isoformat(timespec="seconds"),
         "timezone": config.timezone,
         "top_n": config.top_n,
+        "data_method": data_method,
+        "coverage_note": coverage_note,
         "rows": [
             {
                 **asdict(row),
@@ -82,6 +87,51 @@ def generate_daily_report(
     return html_path
 
 
+def _calculate_daily_rows(
+    config: AppConfig,
+    *,
+    start_snapshot: list[dict],
+    end_snapshot: list[dict],
+    candidates: list[dict],
+    period_date: date,
+) -> tuple[list[GrowthRow], str, str]:
+    growth_config = config.raw.get("growth", {})
+    method = growth_config.get("daily_method", "stargazers_starred_at")
+
+    if method == "stargazers_starred_at":
+        load_env_file()
+        tz = ZoneInfo(config.timezone)
+        start_local = datetime.combine(period_date, time.min, tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        candidate_limit = int(growth_config.get("starred_at_candidate_limit", 80))
+        rows = calculate_growth_from_stargazers(
+            end_snapshot,
+            candidates=candidates,
+            client=GitHubClient.from_env(),
+            start_at=start_local.astimezone(ZoneInfo("UTC")),
+            end_at=end_local.astimezone(ZoneInfo("UTC")),
+            top_n=config.top_n,
+            candidate_limit=candidate_limit,
+        )
+    return (
+            rows,
+            "stargazers_starred_at",
+            f"基于候选池前 {min(candidate_limit, len(end_snapshot))} 个仓库的 stargazers starred_at 区间统计；若显示 N/A，表示 GitHub API 限流或 token 未配置。不代表全 GitHub 完全覆盖。",
+        )
+
+    rows = calculate_growth(
+        start_snapshot,
+        end_snapshot,
+        candidates=candidates,
+        top_n=config.top_n,
+    )
+    return (
+        rows,
+        "snapshot_diff",
+        "基于两日快照差值计算；如果起始快照是测试基线或缺失，数据不能代表真实昨日增长。",
+    )
+
+
 def _read_json_list(path: Path) -> list[dict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
@@ -91,8 +141,11 @@ def _read_json_list(path: Path) -> list[dict]:
 
 def _render_daily_html(report: dict, rows: list[GrowthRow], row_analysis: dict[str, dict]) -> str:
     title = f"GitHub Stars 增长日报 {report['period_start']}"
-    total_delta = sum(row.stars_delta for row in rows)
-    top_growth = rows[0].stars_delta if rows else 0
+    measured_rows = [row for row in rows if row.measurement_status == "ok"]
+    total_delta = sum(row.stars_delta for row in measured_rows)
+    top_growth = measured_rows[0].stars_delta if measured_rows else None
+    data_method = report.get("data_method", "snapshot_diff")
+    coverage_note = report.get("coverage_note", "")
     rows_html = "\n".join(_render_row(row, row_analysis.get(row.full_name, {})) for row in rows)
     cards_html = "\n".join(_render_analysis_card(row, row_analysis.get(row.full_name, {})) for row in rows)
     if not rows_html:
@@ -293,6 +346,23 @@ def _render_daily_html(report: dict, rows: list[GrowthRow], row_analysis: dict[s
       color: var(--muted);
       font-size: 13px;
     }}
+    .method-note {{
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      margin: 4px 0 26px;
+      padding: 12px 14px;
+      border: 1px dashed var(--gold);
+      background: rgba(255, 250, 240, 0.72);
+      color: #5f4a2a;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+    }}
+    .method-note strong {{
+      color: var(--red);
+      white-space: nowrap;
+    }}
     .analysis-grid {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -400,9 +470,14 @@ def _render_daily_html(report: dict, rows: list[GrowthRow], row_analysis: dict[s
 
     <div class="stats" aria-label="日报指标概览">
       <div class="stat"><span>Tracked Top</span><strong>{len(rows)}</strong></div>
-      <div class="stat"><span>Total Delta</span><strong>+{total_delta:,}</strong></div>
-      <div class="stat"><span>Leader Delta</span><strong>+{top_growth:,}</strong></div>
-      <div class="stat"><span>Evidence Mode</span><strong>GitHub</strong></div>
+      <div class="stat"><span>Total Delta</span><strong>{_format_delta(total_delta, True)}</strong></div>
+      <div class="stat"><span>Leader Delta</span><strong>{_format_delta(top_growth, top_growth is not None)}</strong></div>
+      <div class="stat"><span>Growth Method</span><strong>{html.escape(data_method)}</strong></div>
+    </div>
+
+    <div class="method-note">
+      <strong>数据口径</strong>
+      <span>{html.escape(coverage_note)}</span>
     </div>
 
     <h2>增长榜</h2>
@@ -433,7 +508,7 @@ def _render_daily_html(report: dict, rows: list[GrowthRow], row_analysis: dict[s
       {cards_html}
     </div>
 
-    <p class="note">数据基于本地 GitHub API 快照差值计算。分析证据来自 README、近期 release、近期 issue/PR；外部搜索以可点击检索入口呈现，后续自动化可继续抓取第三方网页正文。</p>
+    <p class="note">分析证据来自 README、近期 release、近期 issue/PR；外部搜索以可点击检索入口呈现。当前候选发现仍是近似策略，后续需要扩展 GitHub Search 查询矩阵或接入额外趋势源，才能更接近全站增长榜。</p>
   </main>
 </body>
 </html>
@@ -455,7 +530,7 @@ def _render_row(row: GrowthRow, analysis: dict) -> str:
             <td class="repo"><a href="{html.escape(row.html_url)}" target="_blank" rel="noreferrer">{html.escape(row.full_name)}</a></td>
             <td class="num">{row.stars_start:,}</td>
             <td class="num">{row.stars_end:,}</td>
-            <td class="num"><span class="delta">+{row.stars_delta:,}</span></td>
+            <td class="num"><span class="delta">{_format_delta(row.stars_delta, row.measurement_status == "ok")}</span></td>
             <td class="num">{html.escape(growth_rate)}</td>
             <td>{html.escape(row.language or "-")}</td>
             <td><div class="topics">{topics_html}</div></td>
@@ -499,7 +574,7 @@ def _render_analysis_card(row: GrowthRow, analysis: dict) -> str:
       <article class="analysis-card">
         <div class="card-head">
           <h3><a href="{html.escape(row.html_url)}" target="_blank" rel="noreferrer">#{row.rank} {html.escape(row.full_name)}</a></h3>
-          <small>+{row.stars_delta:,} Stars</small>
+          <small>{_format_delta(row.stars_delta, row.measurement_status == "ok")} Stars</small>
         </div>
         <p>{html.escape(purpose)}</p>
         <h4>增长信号</h4>
@@ -539,6 +614,12 @@ def _clip(value: str, length: int) -> str:
     if len(value) <= length:
         return value
     return value[: length - 1].rstrip() + "…"
+
+
+def _format_delta(value: int | None, available: bool) -> str:
+    if not available or value is None:
+        return "N/A"
+    return f"+{value:,}"
 
 
 def _render_index_html(report: dict, daily_path: Path) -> str:

@@ -15,6 +15,10 @@ analysis:
   external_search: true
   max_external_sources_per_repo: 5
 
+growth:
+  daily_method: stargazers_starred_at
+  starred_at_candidate_limit: 80
+
 storage:
   local_enabled: true
   r2_enabled: false

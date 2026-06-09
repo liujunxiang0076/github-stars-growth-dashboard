@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
@@ -58,8 +60,45 @@ class GitHubClient:
         result = self.get_json(f"{API_BASE_URL}/repos/{quote(owner)}/{quote(repo)}/issues?{params}")
         return result if isinstance(result, list) else []
 
-    def get_json(self, url: str) -> dict[str, Any]:
-        request = Request(url, headers=self._headers())
+    def count_stargazers_between(
+        self,
+        full_name: str,
+        *,
+        total_stars: int,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> int:
+        owner, repo = full_name.split("/", 1)
+        per_page = 100
+        page = max(1, math.ceil(max(total_stars, 1) / per_page))
+        count = 0
+
+        while page >= 1:
+            params = urlencode({"per_page": per_page, "page": page})
+            url = f"{API_BASE_URL}/repos/{quote(owner)}/{quote(repo)}/stargazers?{params}"
+            payload = self.get_json(url, accept="application/vnd.github.star+json")
+            if not isinstance(payload, list) or not payload:
+                break
+
+            saw_older_than_period = False
+            for item in reversed(payload):
+                starred_at = item.get("starred_at")
+                if not starred_at:
+                    continue
+                starred = datetime.fromisoformat(starred_at.replace("Z", "+00:00"))
+                if start_at <= starred < end_at:
+                    count += 1
+                elif starred < start_at:
+                    saw_older_than_period = True
+
+            if saw_older_than_period:
+                break
+            page -= 1
+
+        return count
+
+    def get_json(self, url: str, *, accept: str | None = None) -> Any:
+        request = Request(url, headers=self._headers(accept=accept))
 
         try:
             with urlopen(request, timeout=12) as response:
@@ -78,9 +117,9 @@ class GitHubClient:
         except (TimeoutError, URLError) as error:
             raise RuntimeError(f"GitHub API request failed: {error}") from error
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, accept: str | None = None) -> dict[str, str]:
         headers = {
-            "Accept": "application/vnd.github+json",
+            "Accept": accept or "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "github-stars-growth-dashboard",
         }
