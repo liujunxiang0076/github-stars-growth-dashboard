@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Generated data and reports
+data/**/*.json
+data/**/*.jsonl
+reports/**/*.html
+reports/**/*.json
+
+# Keep directory placeholders
+!data/**/.gitkeep
+!reports/**/.gitkeep
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

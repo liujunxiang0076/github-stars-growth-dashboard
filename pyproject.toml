@@ -1,0 +1,35 @@
+[project]
+name = "github-stars-growth-dashboard"
+version = "0.1.0"
+description = "Daily, weekly, and monthly GitHub Stars growth reports."
+requires-python = ">=3.10"
+dependencies = [
+  "boto3>=1.34",
+  "httpx>=0.27",
+  "jinja2>=3.1",
+  "python-dotenv>=1.0",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+github-stars-dashboard = "github_stars_dashboard.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/github_stars_dashboard"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

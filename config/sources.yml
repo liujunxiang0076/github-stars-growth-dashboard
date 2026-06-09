@@ -1,0 +1,20 @@
+timezone: Asia/Shanghai
+top_n: 10
+candidate_limit: 1000
+include_forks: false
+include_archived: false
+
+github:
+  search_queries:
+    - "stars:>100 pushed:>=__RECENT_DATE__"
+    - "stars:10..1000 created:>=__RECENT_DATE__"
+    - "stars:>1000 pushed:>=__RECENT_DATE__"
+
+analysis:
+  readme_max_chars: 12000
+  external_search: true
+  max_external_sources_per_repo: 5
+
+storage:
+  local_enabled: true
+  r2_enabled: false
