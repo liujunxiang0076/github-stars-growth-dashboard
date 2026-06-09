@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 
+from github_stars_dashboard.collect import collect_candidates
+from github_stars_dashboard.config import load_config
 from github_stars_dashboard.pipeline import run_pipeline
 
 
@@ -24,6 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate configuration and planned steps without calling external APIs.",
     )
 
+    collect_parser = subparsers.add_parser("collect", help="Collect GitHub repository snapshots.")
+    collect_parser.add_argument(
+        "--config",
+        default="config/sources.yml",
+        help="Path to the YAML config file.",
+    )
+
     return parser
 
 
@@ -32,6 +41,8 @@ def main() -> None:
 
     if args.command == "run":
         run_pipeline(config_path=args.config, dry_run=args.dry_run)
+    elif args.command == "collect":
+        collect_candidates(load_config(args.config))
 
 
 if __name__ == "__main__":
